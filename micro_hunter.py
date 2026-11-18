@@ -28,6 +28,9 @@ except ImportError:  # Tests inject a small compatibility object.
 
 
 MICRO_SHAPE = "VM.Standard.E2.1.Micro"
+MAX_MICRO_INSTANCES = 2
+MAX_FREE_BLOCK_VOLUME_GB = 200
+FREE_MICRO_OPERATING_SYSTEMS = {"Canonical Ubuntu", "Oracle Linux"}
 TERMINAL_STATES = {"TERMINATED"}
 IN_FLIGHT_STATES = {
     "PROVISIONING",
@@ -101,6 +104,23 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def _expand_path(value: str) -> Path:
     return Path(value).expanduser().resolve()
+
+
+def validate_configured_shape(value: str) -> None:
+    normalized = value.strip()
+    if normalized and normalized != MICRO_SHAPE:
+        raise ConfigError(
+            "This fork only permits "
+            f"{MICRO_SHAPE}; refusing OCI_COMPUTE_SHAPE={normalized!r}"
+        )
+
+
+def validate_free_micro_os(value: str) -> None:
+    if value not in FREE_MICRO_OPERATING_SYSTEMS:
+        allowed = ", ".join(sorted(FREE_MICRO_OPERATING_SYSTEMS))
+        raise ConfigError(
+            f"OPERATING_SYSTEM must be one of the Always Free Linux images: {allowed}"
+        )
 
 
 @dataclass(frozen=True)
@@ -197,6 +217,7 @@ def load_settings() -> Settings:
     image_id = _env("OCI_IMAGE_ID") or None
     if image_id and not image_id.startswith("ocid1.image."):
         raise ConfigError("OCI_IMAGE_ID must be an image OCID")
+    validate_configured_shape(_env("OCI_COMPUTE_SHAPE"))
 
     request_wait_secs = _env_int("REQUEST_WAIT_TIME_SECS", 120, minimum=60)
     max_backoff_secs = _env_int("MAX_BACKOFF_SECS", 900, minimum=request_wait_secs)
@@ -205,12 +226,17 @@ def load_settings() -> Settings:
     )
     boot_volume_size_gb = _env_int("BOOT_VOLUME_SIZE", 50, minimum=50)
     max_total_block_volume_gb = _env_int(
-        "MAX_TOTAL_BLOCK_VOLUME_GB", 200, minimum=boot_volume_size_gb
+        "MAX_TOTAL_BLOCK_VOLUME_GB",
+        MAX_FREE_BLOCK_VOLUME_GB,
+        minimum=boot_volume_size_gb,
     )
-    if max_total_block_volume_gb > 200:
+    if max_total_block_volume_gb > MAX_FREE_BLOCK_VOLUME_GB:
         raise ConfigError(
             "MAX_TOTAL_BLOCK_VOLUME_GB must not exceed the Always Free 200 GB limit"
         )
+
+    operating_system = _env("OPERATING_SYSTEM", "Canonical Ubuntu")
+    validate_free_micro_os(operating_system)
 
     settings = Settings(
         oci_config_path=oci_config_path,
@@ -219,9 +245,9 @@ def load_settings() -> Settings:
         micro_ad=micro_ad,
         subnet_id=subnet_id,
         image_id=image_id,
-        operating_system=_env("OPERATING_SYSTEM", "Canonical Ubuntu"),
+        operating_system=operating_system,
         os_version=_env("OS_VERSION", "22.04"),
-        micro_count=2,
+        micro_count=MAX_MICRO_INSTANCES,
         name_prefix=_env("MICRO_NAME_PREFIX", "micro").strip("-"),
         request_wait_secs=request_wait_secs,
         max_backoff_secs=max_backoff_secs,
@@ -377,7 +403,7 @@ class MicroHunter:
             "list_compartments",
             compartment_id=self.settings.tenancy_id,
             compartment_id_in_subtree=True,
-            access_level="ACCESSIBLE",
+            access_level="ANY",
             lifecycle_state="ACTIVE",
         )
         resource_compartments = [self.settings.tenancy_id]
@@ -454,6 +480,19 @@ class MicroHunter:
             image = _response_data(self.compute.get_image(self.settings.image_id))
             if image.lifecycle_state != "AVAILABLE":
                 raise ConfigError(f"Image is {image.lifecycle_state}, not AVAILABLE")
+            if image.operating_system not in FREE_MICRO_OPERATING_SYSTEMS:
+                raise ConfigError(
+                    "Explicit images must use Canonical Ubuntu or Oracle Linux"
+                )
+            if image.operating_system != self.settings.operating_system:
+                raise ConfigError(
+                    "OCI_IMAGE_ID operating system does not match OPERATING_SYSTEM"
+                )
+            if self._is_marketplace_image(image):
+                raise ConfigError(
+                    "Marketplace images can carry separate software charges; "
+                    "refusing OCI_IMAGE_ID"
+                )
             compatible = getattr(image, "compatible_shapes", None)
             if compatible and MICRO_SHAPE not in compatible:
                 raise ConfigError(f"Image is not compatible with {MICRO_SHAPE}")
@@ -469,6 +508,7 @@ class MicroHunter:
             image
             for image in images
             if image.lifecycle_state == "AVAILABLE"
+            and not self._is_marketplace_image(image)
             and image.operating_system == self.settings.operating_system
             and image.operating_system_version == self.settings.os_version
         ]
@@ -479,6 +519,13 @@ class MicroHunter:
             )
         candidates.sort(key=lambda image: image.time_created, reverse=True)
         return candidates[0].id
+
+    @staticmethod
+    def _is_marketplace_image(image: Any) -> bool:
+        return bool(
+            getattr(image, "listing_id", None)
+            or getattr(image, "listing_resource_version", None)
+        )
 
     def _ensure_ssh_key(self) -> None:
         public_key_path = self.settings.ssh_authorized_keys_file
@@ -657,6 +704,14 @@ class MicroHunter:
         return None
 
     def _launch_details(self, display_name: str) -> Any:
+        if self.settings.micro_count != MAX_MICRO_INSTANCES:
+            raise FatalServiceError(
+                f"Refusing to launch: Micro count must be {MAX_MICRO_INSTANCES}"
+            )
+        if self.settings.max_total_block_volume_gb > MAX_FREE_BLOCK_VOLUME_GB:
+            raise FatalServiceError(
+                f"Refusing to launch: storage limit exceeds {MAX_FREE_BLOCK_VOLUME_GB} GB"
+            )
         create_vnic = self.models.CreateVnicDetails(
             assign_public_ip=self.settings.assign_public_ip,
             assign_private_dns_record=True,
@@ -671,7 +726,7 @@ class MicroHunter:
         instance_options = self.models.InstanceOptions(
             are_legacy_imds_endpoints_disabled=True
         )
-        return self.models.LaunchInstanceDetails(
+        details = self.models.LaunchInstanceDetails(
             availability_domain=self.availability_domain,
             compartment_id=self.settings.compartment_id,
             create_vnic_details=create_vnic,
@@ -681,6 +736,11 @@ class MicroHunter:
             source_details=source_details,
             metadata={"ssh_authorized_keys": self._ssh_public_key()},
         )
+        if details.shape != MICRO_SHAPE:
+            raise FatalServiceError(
+                f"Refusing to launch non-Always-Free shape {details.shape!r}"
+            )
+        return details
 
     def _launch(
         self, display_name: str, pending: PendingLaunch | None = None

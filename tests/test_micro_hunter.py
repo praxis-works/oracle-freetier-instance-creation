@@ -3,6 +3,7 @@ from __future__ import annotations
 import stat
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -49,6 +50,7 @@ class FakeCompute:
         self.instances = []
         self.launch_calls = []
         self.launch_error = None
+        self.image = None
 
     def list_instances(self, **_kwargs):
         return self.instances
@@ -58,6 +60,9 @@ class FakeCompute:
         if self.launch_error:
             raise self.launch_error
         return SimpleNamespace(status=200)
+
+    def get_image(self, _image_id):
+        return self.image
 
 
 class FakeBlockStorage:
@@ -239,6 +244,75 @@ class MicroHunterTests(unittest.TestCase):
         details = self.compute.launch_calls[0]["launch_instance_details"]
         self.assertFalse(hasattr(details, "shape_config"))
         self.assertTrue(details.instance_options.are_legacy_imds_endpoints_disabled)
+
+    def test_non_micro_shape_configuration_is_rejected(self):
+        with self.assertRaises(micro_hunter.ConfigError):
+            micro_hunter.validate_configured_shape("VM.Standard.A1.Flex")
+
+    def test_micro_shape_configuration_is_accepted(self):
+        micro_hunter.validate_configured_shape(micro_hunter.MICRO_SHAPE)
+
+    def test_non_linux_free_tier_os_is_rejected(self):
+        with self.assertRaises(micro_hunter.ConfigError):
+            micro_hunter.validate_free_micro_os("Windows")
+
+    def test_free_tier_linux_os_is_accepted(self):
+        micro_hunter.validate_free_micro_os("Canonical Ubuntu")
+        micro_hunter.validate_free_micro_os("Oracle Linux")
+
+    def test_marketplace_image_is_rejected(self):
+        self.compute.image = SimpleNamespace(
+            id="ocid1.image.oc1.phx.marketplace",
+            lifecycle_state="AVAILABLE",
+            compatible_shapes=[micro_hunter.MICRO_SHAPE],
+            operating_system="Canonical Ubuntu",
+            listing_id="ocid1.marketplacelisting.oc1.phx.example",
+            listing_resource_version="2026.01",
+        )
+        hunter = micro_hunter.MicroHunter(
+            replace(self.settings, image_id=self.compute.image.id),
+            self.compute,
+            self.blockstorage,
+            self.network,
+            self.identity,
+            FakeModels,
+        )
+        with self.assertRaises(micro_hunter.ConfigError):
+            hunter._resolve_image()
+
+    def test_windows_image_is_rejected(self):
+        self.compute.image = SimpleNamespace(
+            id="ocid1.image.oc1.phx.windows",
+            lifecycle_state="AVAILABLE",
+            compatible_shapes=[micro_hunter.MICRO_SHAPE],
+            operating_system="Windows",
+            listing_id=None,
+            listing_resource_version=None,
+        )
+        hunter = micro_hunter.MicroHunter(
+            replace(self.settings, image_id=self.compute.image.id),
+            self.compute,
+            self.blockstorage,
+            self.network,
+            self.identity,
+            FakeModels,
+        )
+        with self.assertRaises(micro_hunter.ConfigError):
+            hunter._resolve_image()
+
+    def test_block_volume_limit_above_always_free_is_rejected_at_launch(self):
+        hunter = micro_hunter.MicroHunter(
+            replace(self.settings, max_total_block_volume_gb=201),
+            self.compute,
+            self.blockstorage,
+            self.network,
+            self.identity,
+            FakeModels,
+        )
+        hunter.availability_domain = "Uocm:PHX-AD-1"
+        hunter.image_id = "ocid1.image.oc1.phx.example"
+        with self.assertRaises(micro_hunter.FatalServiceError):
+            hunter._launch_details("micro-1")
 
     def test_storage_preflight_fails_before_launch(self):
         self.blockstorage.boot_volumes = [

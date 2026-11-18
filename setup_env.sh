@@ -4,66 +4,13 @@ umask 077
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# oci_config_setup.sh
-# This script sets up the OCI configuration interactively and creates an oci.env file.
+# This fork is intentionally restricted to Always Free E2.1.Micro instances.
 
-display_choices(){
-cat <<EOF
-Choose one of the two free shapes
-
-1. VM.Standard.A1.Flex
-2. VM.Standard.E2.1.Micro
-EOF
-}
-
-read -p "Type name of the instance: " INSTANCE_NAME
+read -p "Micro instance name prefix [micro]: " MICRO_NAME_PREFIX
+MICRO_NAME_PREFIX="${MICRO_NAME_PREFIX:-micro}"
 clear
 
-while true; do
-    display_choices
-    
-    read -p "Enter your choice (1 or 2): " SHAPE
-    
-    case $SHAPE in
-        1)
-            SHAPE="VM.Standard.A1.Flex"
-            break
-            ;;
-        2)
-            SHAPE="VM.Standard.E2.1.Micro"
-            break
-            ;;
-        *)
-            clear
-            echo "Invalid choice. Please try again. (CTRL+C to quit)"
-            ;;
-    esac
-done
-clear
-
-while true; do
-    read -p "Use the script for your second free tier Micro Instance? (y/n): " BOOL_MICRO
-    
-    BOOL_MICRO=$(echo "$BOOL_MICRO" | tr '[:upper:]' '[:lower:]')
-
-    case $BOOL_MICRO in
-        y)
-            BOOL_MICRO="True"
-            break
-            ;;
-        n)
-            BOOL_MICRO="False"
-            break
-            ;;
-        *)
-            clear
-            echo "Invalid choice. Please try again (CTRL+C to quit)"
-            ;;
-    esac
-done
-clear
-
-read -p "Enter the Subnet OCID (or press Enter to skip): " SUBNET_ID
+read -p "Enter the regional Subnet OCID: " SUBNET_ID
 clear
 
 read -p "Enter the Image OCID (or press Enter to skip): " IMAGE_ID
@@ -118,21 +65,18 @@ fi
 cat <<EOF > oci.env
 # OCI Configuration
 OCI_CONFIG=$REPO_DIR/oci_config
-OCT_FREE_AD=AD-1
 MICRO_AD=AD-1
-DISPLAY_NAME="$INSTANCE_NAME"
-# The other free shape is AMD: VM.Standard.E2.1.Micro
-OCI_COMPUTE_SHAPE=$SHAPE
-SECOND_MICRO_INSTANCE=$BOOL_MICRO
+# Fixed by code; this fork refuses any other shape.
+OCI_COMPUTE_SHAPE=VM.Standard.E2.1.Micro
 REQUEST_WAIT_TIME_SECS=120
-SSH_AUTHORIZED_KEYS_FILE=$REPO_DIR/id_rsa.pub
 MICRO_SSH_PUBLIC_KEY=$REPO_DIR/id_rsa.pub
-# SUBNET_ID to use ONLY in case running in local or a non E2.1.Micro instance 
+# Regional subnet used only for VM.Standard.E2.1.Micro launches.
 OCI_SUBNET_ID="$SUBNET_ID"
 OCI_IMAGE_ID="$IMAGE_ID"
 # The following will be ignored if OCI_IMAGE_ID is specified
 OPERATING_SYSTEM="Canonical Ubuntu"
 OS_VERSION=22.04
+BOOT_VOLUME_SIZE=50
 
 # Gmail Notification
 NOTIFY_EMAIL=$BOOL_MAIL
@@ -147,7 +91,7 @@ TELEGRAM_TOKEN="$TELEGRAM_TOKEN"
 TELEGRAM_USER_ID="$TELEGRAM_USER_ID"
 
 # Safe sequential Micro hunter settings
-MICRO_NAME_PREFIX=micro
+MICRO_NAME_PREFIX="$MICRO_NAME_PREFIX"
 MAX_RUNTIME_HOURS=6
 MAX_LAUNCH_ATTEMPTS=180
 MAX_BACKOFF_SECS=900
