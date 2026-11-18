@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # oci_config_setup.sh
 # This script sets up the OCI configuration interactively and creates an oci.env file.
@@ -113,14 +117,16 @@ fi
 # Create the new oci.env file with the gathered configuration
 cat <<EOF > oci.env
 # OCI Configuration
-OCI_CONFIG=$HOME/oracle-freetier-instance-creation/oci_config
+OCI_CONFIG=$REPO_DIR/oci_config
 OCT_FREE_AD=AD-1
+MICRO_AD=AD-1
 DISPLAY_NAME="$INSTANCE_NAME"
 # The other free shape is AMD: VM.Standard.E2.1.Micro
 OCI_COMPUTE_SHAPE=$SHAPE
 SECOND_MICRO_INSTANCE=$BOOL_MICRO
-REQUEST_WAIT_TIME_SECS=60
-SSH_AUTHORIZED_KEYS_FILE=$HOME/oracle-freetier-instance-creation/id_rsa.pub
+REQUEST_WAIT_TIME_SECS=120
+SSH_AUTHORIZED_KEYS_FILE=$REPO_DIR/id_rsa.pub
+MICRO_SSH_PUBLIC_KEY=$REPO_DIR/id_rsa.pub
 # SUBNET_ID to use ONLY in case running in local or a non E2.1.Micro instance 
 OCI_SUBNET_ID="$SUBNET_ID"
 OCI_IMAGE_ID="$IMAGE_ID"
@@ -139,6 +145,16 @@ DISCORD_WEBHOOK="$DISCORD_WEBHOOK"
 # Telegram Notification (optional)
 TELEGRAM_TOKEN="$TELEGRAM_TOKEN"
 TELEGRAM_USER_ID="$TELEGRAM_USER_ID"
+
+# Safe sequential Micro hunter settings
+MICRO_NAME_PREFIX=micro
+MAX_RUNTIME_HOURS=6
+MAX_LAUNCH_ATTEMPTS=180
+MAX_BACKOFF_SECS=900
+MAX_RATE_LIMIT_FAILURES=5
+RECONCILE_GRACE_SECS=180
+MAX_TOTAL_BLOCK_VOLUME_GB=200
 EOF
 
+chmod 600 oci.env
 echo "OCI env configuration saved to oci.env"

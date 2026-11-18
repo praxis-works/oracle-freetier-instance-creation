@@ -1,4 +1,24 @@
 #!/usr/bin/env bash
+set -o pipefail
+umask 077
+
+INSTALL_DEPENDENCIES=1
+PYTHON_ENTRYPOINT="main.py"
+EXPECTED_LOG="launch_instance.log"
+case "${1:-run}" in
+    rerun)
+        INSTALL_DEPENDENCIES=0
+        ;;
+    micro)
+        PYTHON_ENTRYPOINT="micro_hunter.py"
+        EXPECTED_LOG="micro_hunter.log"
+        ;;
+    micro-rerun)
+        INSTALL_DEPENDENCIES=0
+        PYTHON_ENTRYPOINT="micro_hunter.py"
+        EXPECTED_LOG="micro_hunter.log"
+        ;;
+esac
 
 # Check if any log files exist
 if ls *.log >/dev/null 2>&1; then
@@ -15,8 +35,8 @@ is_debian_or_ubuntu() {
         { [ "$ID" = "debian" ] || [ "$ID" = "ubuntu" ] || [[ " $ID_LIKE " == *" debian "* ]]; }
 }
 
-# Check if the argument is 'rerun'
-if [ "$1" != "rerun" ]; then
+# Create the environment and install dependencies unless this is a rerun.
+if [ "$INSTALL_DEPENDENCIES" -eq 1 ]; then
     if is_debian_or_ubuntu && command -v apt >/dev/null 2>&1; then
         # Skip if python3-venv is already available to avoid a sudo hang for
         # users who are not in the sudoers file (fixes #67).
@@ -31,7 +51,7 @@ fi
 source .venv/bin/activate
 
 # Upgrade pip and install necessary packages
-if [ "$1" != "rerun" ]; then
+if [ "$INSTALL_DEPENDENCIES" -eq 1 ]; then
     pip install --upgrade pip
     pip install wheel setuptools
     pip install -r requirements.txt
@@ -65,6 +85,10 @@ NORMAL_EXIT=0
 trap 'if [ "$NORMAL_EXIT" -ne 1 ]; then send_notification "🛑 The setup_init.sh script has been terminated."; fi' EXIT
 
 # Load environment variables
+if [ ! -f oci.env ]; then
+    echo "Missing oci.env. Copy oci.env.example to oci.env and fill in your values."
+    exit 1
+fi
 source oci.env
 
 # Function to clean up and send notification
@@ -90,7 +114,7 @@ PYTHON_ERROR_LOG="python_error.log"
 SCRIPT_FAILED=0
 
 # Run the Python program in the background. Keep stdout/stderr so crashes are diagnosable.
-python3 main.py > "$PYTHON_ERROR_LOG" 2>&1 < /dev/null &
+python3 "$PYTHON_ENTRYPOINT" > "$PYTHON_ERROR_LOG" 2>&1 < /dev/null &
 
 # Store the PID of the background process
 SCRIPT_PID=$!
@@ -112,18 +136,18 @@ if [ -s "ERROR_IN_CONFIG.log" ]; then
 elif [ -s "INSTANCE_CREATED" ]; then
     echo "Instance created or Already existing has reached Free tier limit. Check 'INSTANCE_CREATED' File"
     send_notification "🎊 Great news! An instance was created or we've hit the Free tier limit. Check the 'INSTANCE_CREATED' file for details!"
-elif [ -s "launch_instance.log" ]; then
+elif [ -s "$EXPECTED_LOG" ]; then
     echo "Script is running successfully"
     send_notification "👍 All systems go! The script is running smoothly."
 else
     echo "Couldn't find any logs waiting 60 secs before checking again"  
     sleep 60  # Wait for a 1 min to see if the file is populated
-    if [ -s "launch_instance.log" ]; then
+    if [ -s "$EXPECTED_LOG" ]; then
         echo "Script is running successfully"
         send_notification "👍 Good news! The script is up and running after a short delay."
     elif ! is_script_running; then
-        echo "Python process exited before launch_instance.log was written. Check $PYTHON_ERROR_LOG"
-        send_notification "😱 The OCI script exited before writing launch_instance.log. Check $PYTHON_ERROR_LOG."
+        echo "Python process exited before $EXPECTED_LOG was written. Check $PYTHON_ERROR_LOG"
+        send_notification "😱 The OCI script exited before writing $EXPECTED_LOG. Check $PYTHON_ERROR_LOG."
         SCRIPT_FAILED=1
     else
         echo "Unhandled Exception Occurred."

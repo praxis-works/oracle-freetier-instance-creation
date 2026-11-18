@@ -1,4 +1,4 @@
-oci
-paramiko
-python-dotenv
-requests
+oci>=2.126.4,<3
+paramiko>=3.4.0,<5
+python-dotenv>=1.0.1,<2
+requests>=2.32.2,<3

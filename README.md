@@ -46,7 +46,12 @@ In short, this script is another way to bypass the "Out of host capacity" or "Ou
 
 4. In your `oci_config`, fill the **`key_file`** with the absolute path of your `oci_api_private_key.pem`. For example, `/home/ubuntu/oracle-freetier-instance-creation/oci_api_private_key.pem`.
 
-5. Edit the **`oci.env`** file and fill in the necessary details. Refer [below for more information](https://github.com/mohankumarpaluru/oracle-freetier-instance-creation#environment-variables) `oci.env` fields.
+5. Copy **`oci.env.example`** to **`oci.env`** and fill in the necessary details. The real `oci.env` is ignored by Git because it can contain notification credentials. Refer [below for more information](https://github.com/mohankumarpaluru/oracle-freetier-instance-creation#environment-variables) `oci.env` fields.
+
+    ```bash
+    cp oci.env.example oci.env
+    chmod 600 oci.env
+    ```
 
 	You can also use run the `setup_env.sh` script to interactively generate the `oci.env` file with your desired configuration:
 
@@ -137,7 +142,7 @@ flowchart TD
 - `DISPLAY_NAME`: Name of the Instance
 - `REQUEST_WAIT_TIME_SECS`: Wait before trying to launch an instance again.
 - `SSH_AUTHORIZED_KEYS_FILE`: Give the absolute path of an SSH public key for ARM instance. **The program will create a public and private key pair with the name specified if the key file doesn't exist; otherwise, it uses the one specified**.
-- `OCI_SUBNET_ID`: The `OCID` of an existing subnet. **Required when running the script locally** (not on an OCI Micro instance). Leave empty when running on a Micro instance — the script auto-detects the subnet. If left empty while running locally the script may pick an unexpected subnet.
+- `OCI_SUBNET_ID`: The `OCID` of an existing regional subnet. **Required when running `micro_hunter.py`**, including from an OCI instance. The legacy `main.py` flow can auto-detect a subnet when left empty on an OCI instance.
     >  This can be found in `Networking` > `Virtual cloud networks` > `<VPC-Name>` > `Subnet Details`.
 - `OCI_IMAGE_ID`: Specific image OCID to use. If left empty, the script uses `OPERATING_SYSTEM` + `OS_VERSION` to find the newest matching image and writes all available options to `images_list.json` on the first run — check that file to find valid image OCIDs.
 - `OCI_COMPUTE_SHAPE`: Free-tier compute shape of the instance to launch. Defaults to ARM, but configurable if you are running into capacity issues for the free AMD instance in your home region. Acceptable values `VM.Standard.A1.Flex` and `VM.Standard.E2.1.Micro`.
@@ -209,13 +214,79 @@ If you launched it with `setup_init.sh`, send SIGINT to the shell session (Ctrl+
 
 **How do I change how often it retries?**
 
-Set `REQUEST_WAIT_TIME_SECS` in `oci.env`. The default is 60 seconds. Setting it too low (e.g., < 30s) risks rate-limiting from OCI (`TooManyRequests` error).
+Set `REQUEST_WAIT_TIME_SECS` in `oci.env`. The generated default is 120 seconds.
+Setting it too low (e.g., < 60s) risks rate-limiting from OCI
+(`TooManyRequests` error).
 
 **I see a `LimitExceeded` error — does that mean I already have an instance?**
 
 Not necessarily. It means you have hit a service limit in your tenancy. Log into the [OCI Console](https://cloud.oracle.com) and check whether an ARM instance already exists. If it does, the script should detect it and exit. If not, the limit may relate to boot volume storage — check your tenancy limits.
 
 **For more error-specific help see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).**
+
+## AMD Micro-only safe mode
+
+Use `micro_hunter.py` when an ARM instance already exists and you only need the
+two Always Free `VM.Standard.E2.1.Micro` instances. This entry point does not
+launch, stop, or resize ARM instances.
+
+Before running it, set these values in `oci.env`:
+
+```bash
+MICRO_AD=PHX-AD-1
+OCI_SUBNET_ID=ocid1.subnet...
+MICRO_NAME_PREFIX=micro
+REQUEST_WAIT_TIME_SECS=120
+MAX_RUNTIME_HOURS=6
+MAX_LAUNCH_ATTEMPTS=180
+MAX_TOTAL_BLOCK_VOLUME_GB=200
+```
+
+`OCI_CONFIG` must point to an API config in the tenancy's **home region**.
+`OCI_SUBNET_ID` must be a regional subnet that permits an ephemeral public IP
+when `ASSIGN_PUBLIC_IP=true`. If an AD suffix is ambiguous, use the full AD
+name shown by OCI. `OCI_COMPARTMENT_ID` is optional and defaults to the
+tenancy OCID.
+
+Run a read-only preflight first:
+
+```bash
+python3 micro_hunter.py --dry-run
+```
+
+Then start the hunter once:
+
+```bash
+./setup_init.sh micro
+```
+
+Later reruns can skip dependency installation:
+
+```bash
+./setup_init.sh micro-rerun
+```
+
+Safety behavior:
+
+- Counts non-terminated Micro instances and block volumes across the tenancy.
+- Refuses to launch when the next boot volume would exceed 200 GB.
+- Requires a regional subnet and a uniquely resolved home-region AD.
+- Launches sequentially as `micro-1`, then `micro-2`.
+- Treats only an exact display name with shape `VM.Standard.E2.1.Micro` and
+  lifecycle state `RUNNING` as a completed launch.
+- Omits `shape_config` for the fixed 1 OCPU / 1 GB Micro shape.
+- Persists an `opc_retry_token` before LaunchInstance and reconciles ambiguous
+  timeouts by display name before trying again.
+- Stops on `LimitExceeded`, authentication, authorization, invalid parameters,
+  repeated `TooManyRequests`, runtime limits, or launch-attempt limits.
+- Uses at least 120 seconds between capacity retries by default, with jitter.
+- Writes sensitive files with mode `0600` and rotates the log file.
+
+No automation can guarantee that an OCI tenancy will never be reviewed or
+restricted. The upstream project documents cases where Always Free limits were
+reduced to zero after prolonged automation. Keep the default intervals, run in
+limited time windows, stop after both instances are running, and monitor
+`micro_hunter.log`.
 
 ## Credits and References
 - [xitroff](https://www.reddit.com/user/xitroff/): [Resolving Oracle Cloud Out of Capacity Issue and Getting Free VPS with 4 ARM Cores, 24GB of RAM](https://hitrov.medium.com/resolving-oracle-cloud-out-of-capacity-issue-and-getting-free-vps-with-4-arm-cores-24gb-of-a3d7e6a027a8)
