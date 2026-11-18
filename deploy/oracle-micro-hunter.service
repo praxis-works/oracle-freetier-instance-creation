@@ -1,0 +1,22 @@
+[Unit]
+Description=Oracle Always Free AMD Micro Hunter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/oracle-freetier-instance-creation
+ExecStart=/opt/oracle-freetier-instance-creation/.venv/bin/python /opt/oracle-freetier-instance-creation/micro_hunter.py
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/oracle-freetier-instance-creation
+Restart=no
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

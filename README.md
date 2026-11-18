@@ -105,6 +105,12 @@ Skipping dependency installation on later runs:
 
 For compatibility, `python3 main.py` invokes the same Micro-only entry point.
 
+## Deployment guide
+
+For API key setup, OCI resource discovery, tmux deployment, systemd deployment,
+logging, stopping, and troubleshooting, see
+[DEPLOYMENT_zh-CN.md](DEPLOYMENT_zh-CN.md).
+
 ## Cost boundary
 
 The compute request is hard-coded to `VM.Standard.E2.1.Micro`; no ARM or paid
